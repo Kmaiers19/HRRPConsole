@@ -1,5 +1,18 @@
-import React, { useState, useMemo } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ScatterCha// ============================================================
+import React, { useState, useMemo, useEffect } from "react";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ScatterChart,
+  Scatter,
+  ReferenceLine
+} from "recharts";
+
+// HRRP MONITORING CONSOLE — v0.5.1
 // HRRP MONITORING CONSOLE — v0.5.1
 //
 // VERSION HISTORY (full chain visible in the dashboard panel below)
