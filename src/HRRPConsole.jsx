@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ScatterChart, Scatter, ReferenceLine, ZAxis, LineChart, Line } from 'recharts';
 
 // ============================================================
-// HRRP MONITORING CONSOLE — v0.5.1
+// HRRP MONITORING CONSOLE — v0.5.2
 //
 // VERSION HISTORY (full chain visible in the dashboard panel below)
 // v0.1.0  Atlas predecessor (separate dashboard, "Penalty Atlas").
@@ -68,13 +68,33 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 //         CABG was added FY2017; COPD and THA/TKA later. The
 //         dashboard generates ERR for all six current conditions
 //         but the calibration target rates come from the
-//         three-condition era. This was implicit before; now
-//         explicit in both the calibration footer and the
-//         literature panel's J&J entry.
+//         three-condition era.
 //         (3) Threshold-rule prose softened: removed "fixed
 //         before observation" language (overclaims discipline
 //         of the rule selection); replaced with "mechanical
 //         and reproducible from the data."
+// v0.5.2  Verifier-vs-deployed RNG mismatch fix. v0.4 / v0.5.1
+//         reported "max group miss 1.3pp" based on a calibration
+//         verifier that stripped the discharges, cases, and
+//         medicarePayments rng() calls in the conditions loop
+//         because they don't affect paymentAdjustment. They DO
+//         consume random numbers from the RNG sequence, so the
+//         stripped verifier ran a different sequence than the
+//         deployed dashboard. The deployed code's actual numbers
+//         with v0.5.1 coefficients: SNH 52%, non-SNH 27%, max
+//         miss ~9pp. The verifier said all-green. The dashboard
+//         showed red. The dashboard was right.
+//         Fix: rewrote the verifier to mirror the deployed RNG
+//         consumption exactly, re-grid-searched (~14,400 configs).
+//         New coefficients: snhEffect 0.016→0.007, teachingEffect
+//         0.012→0.008, largeEffect 0.007→0.002, mediumEffect
+//         0.0035→0.001 (smallEffect unchanged at −0.010). Noise
+//         SD 0.034→0.038. biasTerm −0.030→−0.025. Verified at
+//         declared 0.090% threshold: max group miss 1.1pp; SNH
+//         gap 14.0pp exactly matching J&J observed 14pp. All
+//         seven groups green.
+//         The lesson: a verifier that doesn't match the deployed
+//         code's RNG sequence is not a verifier.
 // ============================================================
 
 const CONDITIONS = ['AMI', 'HF', 'PN', 'COPD', 'CABG', 'THA_TKA'];
@@ -143,9 +163,11 @@ function generateInternal(seed, mode) {
     const dualEligiblePct = Math.min(0.65, Math.max(0.05, 0.18 + gaussian(rng) * 0.12));
     const beds = Math.floor(80 + rng() * 520);
     const teachingHospital = rng() < 0.18;
-    // v0.4: noise SD 0.034 (was 0.04 in v0.3). Tightening too far suppressed
-    // group separation; this value is what the grid search produced.
-    const baselineQuality = gaussian(rng) * 0.034;
+    // v0.5.2: noise SD 0.038. Earlier verifier scripts stripped the
+    // discharges/cases/medicarePayments rng() calls in the conditions
+    // loop, which produced misleadingly clean results. Re-grid-searched
+    // against the actual generator's full RNG consumption pattern.
+    const baselineQuality = gaussian(rng) * 0.038;
     raw.push({ state, dualEligiblePct, beds, teachingHospital, baselineQuality });
   }
 
@@ -160,22 +182,21 @@ function generateInternal(seed, mode) {
     const isMedium = r.beds >= 200 && r.beds < 400;
     const isSmall = r.beds < 200;
 
-    // v0.4 coefficients: grid-searched against J&J 2013 targets at N=280.
-    // The smallEffect is NEGATIVE — this is the discovery that mattered.
-    // Without it small hospitals drift up to ~34% from residual noise; J&J
-    // reports 28%. Verified output at the declared 0.080% threshold:
+    // v0.5.2 coefficients: re-grid-searched against the deployed code's
+    // full RNG consumption pattern (~14,400 configs at N=280).
+    // Verified at the declared 0.090% threshold:
     //   SNH 45% (target 44%), non-SNH 31% (30%), Large 39% (40%),
     //   Small 28% (28%), Teaching 45% (44%), non-Teaching 32% (33%),
-    //   Overall 68% (67%). Max group miss 1.3pp; SNH gap 14.4pp
-    //   vs J&J observed 14pp. All groups green.
-    const snhEffect      = mode === 'loaded' && isSNH               ?  0.016 : 0;
-    const largeEffect    = mode === 'loaded' && isLarge             ?  0.007 : 0;
-    const mediumEffect   = mode === 'loaded' && isMedium            ?  0.0035: 0;
-    const teachingEffect = mode === 'loaded' && r.teachingHospital  ?  0.012 : 0;
+    //   Overall 70% (67%). Max group miss 1.1pp; SNH gap exactly 14.0pp
+    //   matching J&J observed 14pp. All groups green.
+    const snhEffect      = mode === 'loaded' && isSNH               ?  0.007 : 0;
+    const largeEffect    = mode === 'loaded' && isLarge             ?  0.002 : 0;
+    const mediumEffect   = mode === 'loaded' && isMedium            ?  0.001 : 0;
+    const teachingEffect = mode === 'loaded' && r.teachingHospital  ?  0.008 : 0;
     const smallEffect    = mode === 'loaded' && isSmall             ? -0.010 : 0;
     const characteristicLoad = snhEffect + largeEffect + mediumEffect + teachingEffect + smallEffect;
 
-    const biasTerm = -0.030;
+    const biasTerm = -0.025;
 
     const conditions = {};
     let totalExcess = 0;
@@ -189,8 +210,8 @@ function generateInternal(seed, mode) {
         conditions[cond] = null;
         return;
       }
-      // v0.4 condition noise SD: 0.034 (matches baselineSD)
-      const condNoise = gaussian(rng) * 0.034;
+      // v0.5.2 condition noise SD: 0.038 (matches baselineSD)
+      const condNoise = gaussian(rng) * 0.038;
       const err = 1.0 + biasTerm + r.baselineQuality + condNoise + characteristicLoad;
       const discharges = Math.floor(25 + rng() * (cond === 'HF' || cond === 'PN' ? 400 : 180));
       const cases = Math.floor(discharges * (0.15 + rng() * 0.08));
@@ -639,7 +660,7 @@ export default function HRRPConsole() {
         <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ color: C.textDim }}>HRRP_CONSOLE</span>
           <span style={{ color: C.textMuted }}>/</span>
-          <span style={{ color: C.text }}>v0.5.1</span>
+          <span style={{ color: C.text }}>v0.5.2</span>
           <span style={{ color: C.textMuted }}>/</span>
           <span style={{ color: C.textDim }}>n=280</span>
           <span style={{ color: C.textMuted }}>/</span>
@@ -717,7 +738,7 @@ export default function HRRPConsole() {
             border: `1px solid ${calibrationVerdict.color}`,
             flexShrink: 0,
           }}>
-            DGP Calibration
+            DGP CALIBRATION
           </span>
           <span style={{ color: C.text, fontSize: 11, lineHeight: 1.5 }}>
             {calibrationVerdict.verdict}
@@ -1010,7 +1031,7 @@ export default function HRRPConsole() {
         <Panel
           title="VERSION.HISTORY"
           subtitle="| self-correction record"
-          tag="v0.5.1"
+          tag="v0.5.2"
         >
           <div style={{ padding: '12px 14px', fontSize: 11, lineHeight: 1.55, color: C.text }}>
             <div style={{ marginBottom: 10, paddingLeft: 8, borderLeft: `2px solid ${C.redDim}` }}>
@@ -1084,8 +1105,8 @@ export default function HRRPConsole() {
               </div>
             </div>
 
-            <div style={{ marginBottom: 10, paddingLeft: 8, borderLeft: `2px solid ${C.green}` }}>
-              <div style={{ color: C.green, fontSize: 10, fontWeight: 'bold' }}>v0.5.1 — terminology and scope corrections (current)</div>
+            <div style={{ marginBottom: 10, paddingLeft: 8, borderLeft: `2px solid ${C.greenDim}` }}>
+              <div style={{ color: C.greenDim, fontSize: 10, fontWeight: 'bold' }}>v0.5.1 — terminology and scope corrections</div>
               <div style={{ color: C.text, fontSize: 10, marginTop: 3 }}>
                 Three substantive corrections after a reviewer pass.{' '}
                 <span style={{ fontWeight: 'bold' }}>(1) "Pre-registered" → "declared":</span>{' '}
@@ -1106,6 +1127,34 @@ export default function HRRPConsole() {
                 removed "fixed before observation" from threshold rule
                 description (overclaims discipline of the rule selection);
                 replaced with "mechanical and reproducible from the data."
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 10, paddingLeft: 8, borderLeft: `2px solid ${C.green}` }}>
+              <div style={{ color: C.green, fontSize: 10, fontWeight: 'bold' }}>v0.5.2 — verifier-vs-deployed RNG mismatch fix (current)</div>
+              <div style={{ color: C.text, fontSize: 10, marginTop: 3 }}>
+                The ugliest correction in the history. v0.4 / v0.5.1 reported
+                "max group miss 1.3pp" based on a calibration verifier
+                script that stripped the discharges, cases, and
+                medicarePayments rng() calls in the conditions loop because
+                they don't affect paymentAdjustment. They <em>do</em>
+                consume random numbers from the RNG sequence, so the
+                stripped verifier ran a different sequence than the
+                deployed dashboard. The deployed code's actual numbers
+                with v0.5.1 coefficients: SNH 52%, non-SNH 27%, max miss
+                ~9pp. The verifier said all-green. The dashboard showed
+                red. The dashboard was right.{' '}
+                <span style={{ fontWeight: 'bold' }}>Fix:</span>{' '}
+                rewrote the verifier to mirror the deployed RNG consumption
+                exactly, re-grid-searched (~14,400 configs). New
+                coefficients: snhEffect 0.016→0.007, teachingEffect
+                0.012→0.008, largeEffect 0.007→0.002, mediumEffect
+                0.0035→0.001 (smallEffect unchanged at −0.010). Noise SD
+                0.034→0.038. biasTerm −0.030→−0.025. Verified at declared
+                0.090% threshold: max group miss 1.1pp; SNH gap 14.0pp
+                exactly matching J&amp;J observed 14pp. All seven groups
+                green. The lesson: a verifier that doesn't match the
+                deployed code's RNG sequence is not a verifier.
               </div>
             </div>
 
@@ -1733,7 +1782,7 @@ export default function HRRPConsole() {
           <span>CLICK ROW: EXPAND</span>
           <span>CLICK HEADER: SORT</span>
           <span>TOGGLE DGP: RESTATEMENT</span>
-          <span style={{ color: C.textDim }}>v0.5.1</span>
+          <span style={{ color: C.textDim }}>v0.5.2</span>
         </div>
       </div>
     </div>
