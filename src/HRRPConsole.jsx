@@ -717,7 +717,7 @@ export default function HRRPConsole() {
             border: `1px solid ${calibrationVerdict.color}`,
             flexShrink: 0,
           }}>
-            DGP CALIBRATION
+            SYNTHETIC FIT CHECK
           </span>
           <span style={{ color: C.text, fontSize: 11, lineHeight: 1.5 }}>
             {calibrationVerdict.verdict}
