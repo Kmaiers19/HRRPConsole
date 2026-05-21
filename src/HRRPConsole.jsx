@@ -1,8 +1,15 @@
 import React, { useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ScatterChart, Scatter, ReferenceLine, ZAxis, LineChart, Line } from 'recharts';
+import {
+  CONDITIONS,
+  STATES,
+  generateHospitalsNull,
+  generateHospitalsLoaded,
+  declaredThreshold,
+} from './generator.js';
 
 // ============================================================
-// HRRP MONITORING CONSOLE — v0.5.3
+// HRRP MONITORING CONSOLE — v0.6.0
 //
 // VERSION HISTORY (full chain visible in the dashboard panel below)
 // v0.1.0  Atlas predecessor (separate dashboard, "Penalty Atlas").
@@ -23,67 +30,19 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 //         Threshold exposed as slider. Calibration diagnostics
 //         promoted to first-class panel.
 // v0.4.0  Coefficient retune via grid search at N=280 (~11,500
-//         configs evaluated against J&J 2013 targets). Final:
-//         snhEffect 0.020→0.016, teachingEffect 0.015→0.012,
-//         largeEffect 0.010→0.007, new smallEffect −0.010 (pulls
-//         small hospitals down toward 28% target). biasTerm
-//         shifted −0.020→−0.030. Verified at declared 0.080%
-//         threshold: max group miss 1.3pp; SNH gap 14.4pp vs J&J
-//         observed 14pp. All groups within 3pp. Threshold
-//         declared to median paymentAdjustment among
-//         penalized hospitals. Operational chrome (clock, LAT,
-//         CONN) removed. STATUS/ABOUT moved to first band.
-// v0.5.0  No model changes. Reviewer-readability pass:
-//         (a) explicit thesis sentence at top of STATUS panel,
-//         which is now three labeled subsections in one panel
-//         (DEMONSTRATES / DOES NOT CLAIM / NEXT STEP);
-//         (b) DGP labels reworded for non-statisticians ("group
-//         effects modeled" rather than "loading"); (c) calibration
-//         verdict softened from "WITHIN TARGET" to "matches J&J
-//         rates within Xpp" to remove causal-adjacent language;
-//         (d) literature panel split into three labeled threads
-//         (calibration source / mortality debate / measurement
-//         critique) with a one-line statement of what each thread
-//         answers; (e) regression β moved out of scatter panel
-//         header so it is not read as a finding; (f) calibration
-//         panel footer expanded to motivate the threshold rule,
-//         flag N=280 sampling noise (binomial SE ~5–6pp on SNH
-//         n=71), and note that thresholds recompute per DGP;
-//         (g) palette: textDim and textMuted bumped to meet WCAG
-//         AA contrast on the dark background; (h) responsive
-//         grids (auto-fit minmax) so the dashboard reflows on
-//         mobile; (i) basic ARIA on sortable headers and
-//         clickable rows.
-// v0.5.1  Three substantive corrections after a reviewer pass:
-//         (1) "Pre-registered threshold" → "declared threshold"
-//         everywhere. Pre-registration requires a public
-//         timestamp before observation; the threshold rule was
-//         selected before the calibration check but the
-//         commitment was not formally registered, so the
-//         original term was an overclaim. The honest term:
-//         the rule is mechanical and reproducible from the data.
-//         (2) Joynt & Jha 2013 scope explicitly noted: the
-//         paper analyzed first-year HRRP, when the program
-//         covered the original three conditions (AMI, HF, PN).
-//         CABG was added FY2017; COPD and THA/TKA later. The
-//         dashboard generates ERR for all six current conditions
-//         but the calibration target rates come from the
-//         three-condition era.
-//         (3) Threshold-rule prose softened: removed "fixed
-//         before observation" language (overclaims discipline
-//         of the rule selection); replaced with "mechanical
-//         and reproducible from the data."
+//         configs evaluated against J&J 2013 targets).
+// v0.5.0  Reviewer-readability pass (no model changes).
+// v0.5.1  Three substantive corrections after a reviewer pass
+//         ("pre-registered" → "declared"; J&J scope explicitly
+//         noted; threshold-rule prose softened).
 // v0.5.2  Verifier-vs-deployed RNG mismatch fix. v0.4 / v0.5.1
 //         reported "max group miss 1.3pp" based on a calibration
 //         verifier that stripped the discharges, cases, and
 //         medicarePayments rng() calls in the conditions loop.
 //         They DO consume random numbers, so the stripped verifier
 //         ran a different sequence than the deployed dashboard.
-//         The deployed code's actual numbers with v0.5.1 coefficients:
-//         SNH 52%, non-SNH 27%, max miss ~9pp. Fixed by rewriting
-//         the verifier to mirror RNG consumption and re-grid-searching
-//         (~14,400 configs). Lands new coefficients with verifier
-//         max miss 1.1pp.
+//         Fixed by rewriting the verifier to mirror RNG consumption
+//         and re-grid-searching (~14,400 configs).
 // v0.5.3  paymentAdjustment rounding fix. v0.5.2 still missed by
 //         ~3.5pp on the live dashboard despite the verifier reporting
 //         all-green. Cause: the deployed generator stores
@@ -96,193 +55,22 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 //         largeEffect 0.004, mediumEffect 0.002, smallEffect −0.006,
 //         noise SD 0.030, biasTerm −0.020. Verified at declared
 //         0.080% threshold: max group miss 1.1pp; SNH gap exactly
-//         14.0pp matching J&J observed 14pp. All seven groups green.
-//         The pattern across v0.5.2 and v0.5.3 is the same shape:
+//         14.0pp matching J&J observed 14pp.
+// v0.6.0  Generator extracted to src/generator.js. Component imports
+//         it. The 33-test Vitest suite asserts on the exact module
+//         the component runs - removing the verifier-vs-deployed
+//         divergence class structurally rather than by discipline.
+//         CI runs the tests on every push. The v0.5.3 calibration
+//         claim is now locked: if a coefficient changes, the
+//         snapshot tests fail and the version history claim is
+//         no longer accurate. No model changes.
+//         The pattern across v0.5.2 and v0.5.3 was the same shape:
 //         the verifier was simpler than the generator and the
 //         simplification was silent. A verifier that approximates
 //         the deployed code is not a verifier; it is a different
-//         model that happens to agree by accident.
+//         model that happens to agree by accident. v0.6.0 makes
+//         this no longer structurally possible.
 // ============================================================
-
-const CONDITIONS = ['AMI', 'HF', 'PN', 'COPD', 'CABG', 'THA_TKA'];
-const STATES = ['CA', 'TX', 'NY', 'FL', 'PA', 'IL', 'OH', 'GA', 'NC', 'MI', 'NJ', 'VA', 'WA', 'AZ', 'MA', 'TN', 'IN', 'MO', 'MD', 'WI'];
-
-function mulberry32(seed) {
-  return function() {
-    let t = seed += 0x6D2B79F5;
-    t = Math.imul(t ^ t >>> 15, t | 1);
-    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-
-function gaussian(rng) {
-  const u = 1 - rng();
-  const v = rng();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-}
-
-// ============================================================
-// DGP — NULL
-// Gaussian noise around 1.0. No hospital-characteristic loading.
-// Exists so the scatter and SNH split read as null by
-// construction. Comparison anchor for the loaded DGP.
-// ============================================================
-function generateHospitalsNull(seed = 42) {
-  return generateInternal(seed, 'null');
-}
-
-// ============================================================
-// DGP — LOADED  (v0.4 retune)
-//
-// Targets, all from Joynt & Jha 2013 JAMA 309(4):342–343 Table 1:
-//   SNH high-penalty rate          44%
-//   non-SNH high-penalty rate      30%   (gap target: 14pp)
-//   Large hospital high-penalty    40%
-//   Small hospital high-penalty    28%
-//   Teaching high-penalty          44%
-//   Non-teaching high-penalty      33%
-//   Overall first-year HRRP rate   ~67%
-//
-// v0.3 coefficients (snhEffect 0.020, teachingEffect 0.015,
-// largeEffect 0.010) hit direction and relative ranking but
-// overshot SNH and teaching by ~8pp. v0.4 grid-searched against
-// J&J targets (~11,500 configs at N=280) and found that the
-// missing piece was a NEGATIVE smallEffect (−0.010): without it,
-// small hospitals drift up to ~34% from the residual noise floor
-// rather than landing at the J&J 28%. Other coefficients moved
-// modestly (snh 0.020→0.016, teach 0.015→0.012, large 0.010→0.007)
-// and biasTerm shifted (−0.020→−0.030) to anchor the overall rate.
-// Noise SDs are 0.034, slightly tighter than v0.3's 0.04. The
-// grid search found tighter SDs (0.022–0.028) suppressed group
-// separation rather than helping.
-// ============================================================
-function generateHospitalsLoaded(seed = 42) {
-  return generateInternal(seed, 'loaded');
-}
-
-function generateInternal(seed, mode) {
-  const rng = mulberry32(seed);
-
-  const raw = [];
-  for (let i = 0; i < 280; i++) {
-    const state = STATES[Math.floor(rng() * STATES.length)];
-    const dualEligiblePct = Math.min(0.65, Math.max(0.05, 0.18 + gaussian(rng) * 0.12));
-    const beds = Math.floor(80 + rng() * 520);
-    const teachingHospital = rng() < 0.18;
-    // v0.5.3: noise SD 0.030. v0.5.3's 0.038 was found by a verifier
-    // that didn't account for the Math.round(paymentAdjustment * 10000)
-    // / 10000 step on line 249 — rounding to 4 decimals shifts which
-    // hospitals exceed the threshold. v0.5.3 verifier mirrors the
-    // rounding step and produces numbers that match the deployed UI.
-    const baselineQuality = gaussian(rng) * 0.030;
-    raw.push({ state, dualEligiblePct, beds, teachingHospital, baselineQuality });
-  }
-
-  const dualSorted = [...raw].map(r => r.dualEligiblePct).sort((a, b) => b - a);
-  const snhThreshold = dualSorted[Math.floor(dualSorted.length / 4)];
-
-  const hospitals = [];
-  for (let i = 0; i < raw.length; i++) {
-    const r = raw[i];
-    const isSNH = r.dualEligiblePct >= snhThreshold;
-    const isLarge = r.beds >= 400;
-    const isMedium = r.beds >= 200 && r.beds < 400;
-    const isSmall = r.beds < 200;
-
-    // v0.5.3 coefficients: re-grid-searched (~22,500 configs) with a
-    // verifier that mirrors the deployed code's RNG sequence AND its
-    // paymentAdjustment rounding. Verified at the declared 0.080%
-    // threshold:
-    //   SNH 45% (target 44%), non-SNH 31% (30%), Large 39% (40%),
-    //   Small 28% (28%), Teaching 45% (44%), non-Teaching 32% (33%),
-    //   Overall 69% (67%). Max group miss 1.1pp; SNH gap exactly 14.0pp
-    //   matching J&J observed 14pp. All seven groups green.
-    const snhEffect      = mode === 'loaded' && isSNH               ?  0.007 : 0;
-    const largeEffect    = mode === 'loaded' && isLarge             ?  0.004 : 0;
-    const mediumEffect   = mode === 'loaded' && isMedium            ?  0.002 : 0;
-    const teachingEffect = mode === 'loaded' && r.teachingHospital  ?  0.006 : 0;
-    const smallEffect    = mode === 'loaded' && isSmall             ? -0.006 : 0;
-    const characteristicLoad = snhEffect + largeEffect + mediumEffect + teachingEffect + smallEffect;
-
-    const biasTerm = -0.020;
-
-    const conditions = {};
-    let totalExcess = 0;
-    let conditionsPenalized = 0;
-    let reportingCount = 0;
-    let errSum = 0;
-
-    CONDITIONS.forEach(cond => {
-      const reports = rng() > 0.15;
-      if (!reports) {
-        conditions[cond] = null;
-        return;
-      }
-      // v0.5.3 condition noise SD: 0.030 (matches baselineSD)
-      const condNoise = gaussian(rng) * 0.030;
-      const err = 1.0 + biasTerm + r.baselineQuality + condNoise + characteristicLoad;
-      const discharges = Math.floor(25 + rng() * (cond === 'HF' || cond === 'PN' ? 400 : 180));
-      const cases = Math.floor(discharges * (0.15 + rng() * 0.08));
-      conditions[cond] = {
-        err: Math.round(err * 1000) / 1000,
-        discharges,
-        cases,
-        penalized: err > 1.0,
-      };
-      reportingCount++;
-      errSum += err;
-      if (err > 1.0) {
-        totalExcess += (err - 1.0);
-        conditionsPenalized++;
-      }
-    });
-
-    const meanERR = reportingCount > 0 ? errSum / reportingCount : null;
-    const paymentAdjustment = Math.min(0.03, totalExcess * 0.015);
-    const medicarePayments = r.beds * (18000 + rng() * 12000);
-    const penaltyDollars = paymentAdjustment * medicarePayments;
-
-    hospitals.push({
-      id: 1000 + i,
-      ccn: `DEMO-${String(1000 + i).padStart(4, '0')}`,
-      state: r.state,
-      beds: r.beds,
-      teachingHospital: r.teachingHospital,
-      isSNH,
-      dualEligiblePct: Math.round(r.dualEligiblePct * 1000) / 1000,
-      conditions,
-      reportingCount,
-      conditionsPenalized,
-      meanERR: meanERR !== null ? Math.round(meanERR * 1000) / 1000 : null,
-      paymentAdjustment: Math.round(paymentAdjustment * 10000) / 10000,
-      penaltyDollars: Math.round(penaltyDollars),
-      aggregateExcess: Math.round(totalExcess * 1000) / 1000,
-    });
-  }
-
-  return hospitals;
-}
-
-// ============================================================
-// DECLARED THRESHOLD RULE
-// The "high-penalty" cutoff for SNH comparison is set to the
-// median paymentAdjustment among penalized hospitals in the
-// LOADED dataset, computed once at module load. The rule is
-// mechanical (median of a defined subset) so the cutoff is
-// reproducible from the data, not chosen to make the
-// calibration look better. This is "declared," not formally
-// "pre-registered" — pre-registration would require a public
-// timestamp before observation. The slider remains for
-// sensitivity inspection; the headline numbers use the
-// declared value.
-// ============================================================
-function declaredThreshold(hospitals) {
-  const penalized = hospitals.filter(h => h.paymentAdjustment > 0).map(h => h.paymentAdjustment).sort((a,b) => a - b);
-  if (penalized.length === 0) return 0.0045;
-  const med = penalized[Math.floor(penalized.length / 2)];
-  return Math.round(med * 10000) / 10000;
-}
 
 // ============================================================
 // PALETTE
@@ -669,7 +457,7 @@ export default function HRRPConsole() {
         <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ color: C.textDim }}>HRRP_CONSOLE</span>
           <span style={{ color: C.textMuted }}>/</span>
-          <span style={{ color: C.text }}>v0.5.3</span>
+          <span style={{ color: C.text }}>v0.6.0</span>
           <span style={{ color: C.textMuted }}>/</span>
           <span style={{ color: C.textDim }}>n=280</span>
           <span style={{ color: C.textMuted }}>/</span>
@@ -1040,7 +828,7 @@ export default function HRRPConsole() {
         <Panel
           title="VERSION.HISTORY"
           subtitle="| self-correction record"
-          tag="v0.5.3"
+          tag="v0.6.0"
         >
           <div style={{ padding: '12px 14px', fontSize: 11, lineHeight: 1.55, color: C.text }}>
             <div style={{ marginBottom: 10, paddingLeft: 8, borderLeft: `2px solid ${C.redDim}` }}>
@@ -1157,8 +945,8 @@ export default function HRRPConsole() {
               </div>
             </div>
 
-            <div style={{ marginBottom: 10, paddingLeft: 8, borderLeft: `2px solid ${C.green}` }}>
-              <div style={{ color: C.green, fontSize: 10, fontWeight: 'bold' }}>v0.5.3 — paymentAdjustment rounding fix (current)</div>
+            <div style={{ marginBottom: 10, paddingLeft: 8, borderLeft: `2px solid ${C.greenDim}` }}>
+              <div style={{ color: C.greenDim, fontSize: 10, fontWeight: 'bold' }}>v0.5.3 — paymentAdjustment rounding fix</div>
               <div style={{ color: C.text, fontSize: 10, marginTop: 3 }}>
                 v0.5.2 still missed by ~3.5pp on the live dashboard despite
                 the verifier reporting all-green. Cause: the deployed
@@ -1178,6 +966,31 @@ export default function HRRPConsole() {
                 silent. A verifier that approximates the deployed code is
                 not a verifier; it is a different model that happens to
                 agree by accident.
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 10, paddingLeft: 8, borderLeft: `2px solid ${C.green}` }}>
+              <div style={{ color: C.green, fontSize: 10, fontWeight: 'bold' }}>v0.6.0 — generator extracted, test suite added (current)</div>
+              <div style={{ color: C.text, fontSize: 10, marginTop: 3 }}>
+                Structural fix for the failure mode v0.5.2 and v0.5.3 caught
+                by hand. The generator (mulberry32, gaussian,
+                generateInternal, declaredThreshold) was moved into{' '}
+                <span style={{ fontFamily: 'inherit', color: C.amber }}>src/generator.js</span>{' '}
+                and the component now imports it. A 33-test Vitest suite
+                runs against that exact module, covering calibration bands
+                (every group within 3pp of J&amp;J), determinism (same
+                seed produces identical output), the NULL property (SNH
+                gap stays within sampling noise across 5 seeds), the
+                threshold rule (declaredThreshold returns the rounded
+                median), regression direction (β positive under LOADED,
+                near zero under NULL), and a v0.5.3 snapshot that locks
+                the exact rates the version history claims. CI runs the
+                suite on every push. If a coefficient drifts, the
+                snapshot tests fail and the claim is no longer accurate.
+                No model changes. The discipline that v0.5.2 and v0.5.3
+                enforced by hand is now structural: a verifier that
+                doesn't match the deployed code can no longer be
+                accidentally constructed.
               </div>
             </div>
 
@@ -1805,7 +1618,7 @@ export default function HRRPConsole() {
           <span>CLICK ROW: EXPAND</span>
           <span>CLICK HEADER: SORT</span>
           <span>TOGGLE DGP: RESTATEMENT</span>
-          <span style={{ color: C.textDim }}>v0.5.3</span>
+          <span style={{ color: C.textDim }}>v0.6.0</span>
         </div>
       </div>
     </div>
